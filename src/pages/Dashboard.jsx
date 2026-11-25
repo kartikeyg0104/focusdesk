@@ -1,130 +1,249 @@
-import { TaskCard } from '../components/TaskCard.jsx';
-import { TaskForm } from '../components/TaskForm.jsx';
-import { StatisticsCard } from '../components/StatisticsCard.jsx';
-import { EmptyState } from '../components/EmptyState.jsx';
-import { formatDuration, phaseLabel } from '../utils/formatTime.js';
-import { formatDate, greetingFor, isBeforeDay, isSameDay } from '../utils/date.js';
+import { useMemo } from 'react';
+import { Icon } from '../components/Icons.jsx';
+import { AnimatedNumber, EmptyState, StatCard, SubjectDot } from '../components/ui.jsx';
+import { BarChart } from '../components/charts.jsx';
+import { QuickAdd } from '../components/QuickAdd.jsx';
+import { TaskRow } from '../components/TaskRow.jsx';
+import { dueInfo, formatDuration, phaseLabel } from '../utils/formatTime.js';
+import { isBeforeDay, isSameDay } from '../utils/date.js';
+import { dailySeries } from '../utils/insights.js';
 
-export function Dashboard({
-  settings,
-  tasks,
-  subjects,
-  stats,
-  timer,
-  onOpenTask,
-  onComplete,
-  onReopen,
-  onFocus,
-  onNavigate,
-  onCreateTask,
-}) {
-  const now = new Date();
-  const dueToday = tasks.filter((task) => task.status !== 'completed' && task.dueDate && isSameDay(task.dueDate, now));
-  const overdue = tasks.filter((task) => task.status !== 'completed' && task.dueDate && isBeforeDay(task.dueDate, now));
-  const greeting = `${greetingFor(now)}${settings.studentName ? `, ${settings.studentName}` : ''}`;
-  const maxSeconds = Math.max(1, ...stats.daily.map((day) => day.seconds));
-  const subjectById = Object.fromEntries(subjects.map((subject) => [subject.id, subject]));
+const PRIORITY_RANK = { high: 0, medium: 1, low: 2 };
+
+export function Dashboard({ tasks, subjects, sessions, settings, stats, streak, focusByTask, timer, actions }) {
+  const subjectById = useMemo(() => Object.fromEntries(subjects.map((subject) => [subject.id, subject])), [subjects]);
+  const week = useMemo(() => dailySeries(sessions, 7), [sessions]);
+
+  const { today, upcoming, nextUp } = useMemo(() => {
+    const now = new Date();
+    const open = tasks.filter((task) => task.status !== 'completed');
+    const urgent = open
+      .filter((task) => task.dueDate && (isBeforeDay(task.dueDate, now) || isSameDay(task.dueDate, now)))
+      .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate) || PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]);
+    const inProgress = open.filter((task) => task.status === 'in_progress' && !urgent.includes(task));
+    const todayList = [...urgent, ...inProgress];
+    const later = open
+      .filter((task) => task.dueDate && !todayList.includes(task))
+      .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate))
+      .slice(0, 5);
+    // Suggest what to work on: something already due, else the most important open task.
+    const suggestion =
+      todayList[0] ||
+      [...open].sort(
+        (a, b) =>
+          PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
+          (a.dueDate ? new Date(a.dueDate).getTime() : Infinity) - (b.dueDate ? new Date(b.dueDate).getTime() : Infinity)
+      )[0] ||
+      null;
+    return { today: todayList, upcoming: later, nextUp: suggestion };
+  }, [tasks]);
+
+  const goalSeconds = settings.dailyGoalMinutes * 60;
+  const goalProgress = Math.min(1, stats.studySecondsToday / goalSeconds);
+  const timerActive = timer.state.status !== 'idle';
+  const activeTask = timerActive ? tasks.find((task) => task.id === timer.state.taskId) : null;
+  const heroTask = activeTask || nextUp;
+  const heroDue = heroTask ? dueInfo(heroTask) : null;
 
   return (
     <div className="page-stack">
-      <section className="grid-metrics">
-        <StatisticsCard
-          label="Due today"
-          value={dueToday.length}
-          hint="Open assignments with today's deadline"
-          onClick={() => onNavigate('tasks')}
-        />
-        <StatisticsCard
-          label="Overdue"
-          value={overdue.length}
-          hint="Needs attention first"
-          onClick={() => onNavigate('tasks')}
-        />
-        <StatisticsCard
-          label="Completed today"
-          value={stats.tasks.completedToday}
-          hint="Finished since midnight"
-          onClick={() => onNavigate('tasks')}
-        />
-        <StatisticsCard
-          label="Study time today"
-          value={formatDuration(stats.studySecondsToday)}
-          hint={timer.state.status === 'idle' ? 'No session running' : `${phaseLabel(timer.state.phase)} in progress`}
-          onClick={() => onNavigate('focus')}
-        />
-      </section>
-
-      <section className="split">
-        <article className="panel">
-          <div className="panel-title">
-            <div>
-              <h2>{greeting}</h2>
-              <p className="muted">Weekly focus time: {formatDuration(stats.studySecondsWeek)}</p>
+      <section className="hero card spot">
+        <div className="hero-glow" aria-hidden="true" />
+        <div className="hero-copy">
+          <span className="eyebrow">
+            <Icon name={timerActive ? 'zap' : 'sparkle'} size={13} />
+            {timerActive ? `${phaseLabel(timer.state.phase)} in progress` : heroTask ? 'Up next' : 'All clear'}
+          </span>
+          <h2>{heroTask ? heroTask.title : 'Nothing is waiting on you.'}</h2>
+          <p className="hero-meta">
+            {heroTask ? (
+              <>
+                {subjectById[heroTask.subjectId] ? (
+                  <span className="meta-item">
+                    <SubjectDot color={subjectById[heroTask.subjectId].color} />
+                    {subjectById[heroTask.subjectId].name}
+                  </span>
+                ) : null}
+                {heroDue ? <span className={`meta-item tone-${heroDue.tone}`}>Due {heroDue.label.toLowerCase()}</span> : null}
+                {heroTask.estimatedMinutes ? <span className="meta-item">{formatDuration(heroTask.estimatedMinutes * 60)} estimated</span> : null}
+              </>
+            ) : (
+              'Add a task below, or start a free focus block.'
+            )}
+          </p>
+          <div className="hero-actions">
+            {timerActive ? (
+              <button type="button" className="btn btn-primary btn-lg" onClick={() => actions.navigate('focus')}>
+                <Icon name="focus" size={17} />
+                Open timer
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary btn-lg"
+                onClick={() => (heroTask ? actions.focusTask(heroTask) : actions.startFocus())}
+              >
+                <Icon name="play" size={15} />
+                {heroTask ? 'Start focus' : 'Start a focus block'}
+              </button>
+            )}
+            {heroTask ? (
+              <button type="button" className="btn btn-glass btn-lg" onClick={() => actions.openTask(heroTask)}>
+                Open task
+              </button>
+            ) : null}
+          </div>
+        </div>
+        <div className="hero-goal">
+          <div className="goal-ring">
+            <svg viewBox="0 0 120 120" aria-hidden="true">
+              <circle className="ring-track" cx="60" cy="60" r="52" strokeWidth="9" fill="none" />
+              <circle
+                className="ring-value"
+                cx="60"
+                cy="60"
+                r="52"
+                strokeWidth="9"
+                fill="none"
+                strokeLinecap="round"
+                strokeDasharray={2 * Math.PI * 52}
+                strokeDashoffset={2 * Math.PI * 52 * (1 - goalProgress)}
+              />
+            </svg>
+            <div className="ring-center">
+              <strong>
+                <AnimatedNumber value={Math.round(goalProgress * 100)} />%
+              </strong>
+              <span>of daily goal</span>
             </div>
           </div>
-          <div className="week-chart" aria-label="Weekly study time">
-            {stats.daily.map((day) => (
-              <div key={day.date} className="week-col">
-                <div className="week-bar-track">
-                  <div
-                    className="week-bar"
-                    style={{ height: day.seconds ? `${Math.max(6, (day.seconds / maxSeconds) * 100)}%` : '0%' }}
-                    title={`${day.label}: ${formatDuration(day.seconds)}`}
-                  />
-                </div>
-                <span>{day.label}</span>
-              </div>
-            ))}
-          </div>
-        </article>
-        <article className="panel">
-          <div className="panel-title">
-            <h2>Quick add</h2>
-          </div>
-          <TaskForm compact subjects={subjects} submitLabel="Add task" onSubmit={onCreateTask} />
-        </article>
+          <p>
+            {formatDuration(stats.studySecondsToday)} of {formatDuration(goalSeconds)}
+          </p>
+        </div>
       </section>
 
-      <section className="split">
-        <article className="panel">
-          <div className="panel-title">
-            <h2>Today's priorities</h2>
-          </div>
-          {overdue.concat(dueToday).length === 0 ? (
-            <EmptyState title="Nothing due right now" body="When a deadline lands today, it will show up here." />
+      <section className="stat-grid">
+        <StatCard
+          index={0}
+          icon="clock"
+          label="Focus today"
+          value={formatDuration(stats.studySecondsToday)}
+          hint={`${stats.completedFocusToday} session${stats.completedFocusToday === 1 ? '' : 's'} completed`}
+          onClick={() => actions.navigate('statistics')}
+        />
+        <StatCard
+          index={1}
+          icon="flame"
+          tone="warning"
+          label="Streak"
+          value={
+            <>
+              <AnimatedNumber value={streak.current} /> <small>day{streak.current === 1 ? '' : 's'}</small>
+            </>
+          }
+          hint={streak.studiedToday ? 'Kept alive today' : streak.current > 0 ? 'Study today to keep it' : `Best: ${streak.best} days`}
+          onClick={() => actions.navigate('statistics')}
+        />
+        <StatCard
+          index={2}
+          icon="alert"
+          tone={stats.tasks.overdue > 0 ? 'danger' : 'success'}
+          label="Due today"
+          value={<AnimatedNumber value={stats.tasks.dueToday} />}
+          hint={stats.tasks.overdue > 0 ? `${stats.tasks.overdue} overdue` : 'Nothing overdue'}
+          onClick={() => actions.navigate('tasks')}
+        />
+        <StatCard
+          index={3}
+          icon="check"
+          tone="success"
+          label="Done today"
+          value={<AnimatedNumber value={stats.tasks.completedToday} />}
+          hint={`${stats.tasks.remaining} still open`}
+          onClick={() => actions.navigate('tasks')}
+        />
+      </section>
+
+      <QuickAdd subjects={subjects} onCreate={actions.createTask} />
+
+      <section className="dash-grid">
+        <article className="card panel">
+          <header className="panel-head">
+            <div>
+              <h3>Today</h3>
+              <p className="muted small">Overdue, due today, and in progress</p>
+            </div>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => actions.navigate('tasks')}>
+              All tasks
+              <Icon name="arrowRight" size={14} />
+            </button>
+          </header>
+          {today.length === 0 ? (
+            <EmptyState icon="trophy" title="You're caught up" body="Nothing is due today. Get ahead, or take the win." />
           ) : (
             <div className="task-list">
-              {overdue.concat(dueToday).slice(0, 6).map((task) => (
-                <TaskCard
+              {today.slice(0, 7).map((task, index) => (
+                <TaskRow
                   key={task.id}
                   task={task}
+                  index={index}
                   subject={subjectById[task.subjectId]}
-                  onOpen={onOpenTask}
-                  onComplete={onComplete}
-                  onReopen={onReopen}
-                  onFocus={onFocus}
+                  focusSeconds={focusByTask.get(task.id) || 0}
+                  onOpen={actions.openTask}
+                  onToggle={actions.toggleTask}
+                  onFocus={actions.focusTask}
                 />
               ))}
             </div>
           )}
         </article>
-        <article className="panel">
-          <div className="panel-title">
-            <h2>Upcoming deadlines</h2>
-          </div>
-          {stats.upcoming.length === 0 ? (
-            <EmptyState title="No upcoming dates" body="Add due dates to tasks to fill this list." />
-          ) : (
-            <div className="task-list">
-              {stats.upcoming.map((task) => (
-                <button key={task.id} type="button" className="clickable-card" onClick={() => onOpenTask(task)}>
-                  <div className="task-title">{task.title}</div>
-                  <div className="task-meta">{formatDate(task.dueDate)}</div>
-                </button>
-              ))}
-            </div>
-          )}
-        </article>
+
+        <div className="dash-side">
+          <article className="card panel">
+            <header className="panel-head">
+              <div>
+                <h3>Last 7 days</h3>
+                <p className="muted small">{formatDuration(week.reduce((sum, day) => sum + day.seconds, 0))} focused</p>
+              </div>
+            </header>
+            <BarChart data={week} goalSeconds={goalSeconds} height={150} />
+          </article>
+
+          <article className="card panel">
+            <header className="panel-head">
+              <h3>Coming up</h3>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => actions.navigate('calendar')}>
+                Calendar
+              </button>
+            </header>
+            {upcoming.length === 0 ? (
+              <p className="muted small pad-b">No upcoming deadlines. Give tasks a due date to see them here.</p>
+            ) : (
+              <ul className="upcoming-list">
+                {upcoming.map((task) => {
+                  const due = new Date(task.dueDate);
+                  return (
+                    <li key={task.id}>
+                      <button type="button" onClick={() => actions.openTask(task)}>
+                        <span className="date-chip">
+                          <span>{due.toLocaleDateString(undefined, { month: 'short' })}</span>
+                          <strong>{due.getDate()}</strong>
+                        </span>
+                        <span className="upcoming-copy">
+                          <span className="task-title-text">{task.title}</span>
+                          <span className="muted small">
+                            {subjectById[task.subjectId]?.name || 'No subject'} · {dueInfo(task).label}
+                          </span>
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </article>
+        </div>
       </section>
     </div>
   );

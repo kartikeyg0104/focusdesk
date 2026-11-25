@@ -39,3 +39,37 @@ export function phaseLabel(value) {
   if (value === 'longBreak') return 'Long break';
   return 'Focus';
 }
+
+// Short, human label for a due date plus a tone used for colouring.
+export function dueInfo(task, now = new Date()) {
+  if (!task?.dueDate) return null;
+  const due = new Date(task.dueDate);
+  if (Number.isNaN(due.getTime())) return null;
+  const startOf = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const days = Math.round((startOf(due) - startOf(now)) / 86400000);
+  const done = task.status === 'completed';
+  if (days < 0) {
+    return { label: done ? formatShort(due) : `${-days}d overdue`, tone: done ? 'muted' : 'danger', days };
+  }
+  if (days === 0) return { label: 'Today', tone: done ? 'muted' : 'warning', days };
+  if (days === 1) return { label: 'Tomorrow', tone: done ? 'muted' : 'accent', days };
+  if (days < 7) return { label: due.toLocaleDateString(undefined, { weekday: 'long' }), tone: 'muted', days };
+  return { label: formatShort(due), tone: 'muted', days };
+}
+
+function formatShort(date) {
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+export function relativeTime(value, now = new Date()) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const minutes = Math.round((now - date) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return formatShort(date);
+}

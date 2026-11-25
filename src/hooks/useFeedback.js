@@ -13,18 +13,21 @@ export function useFeedback() {
     };
   }, []);
 
-  const pushToast = useCallback((message, tone = 'info') => {
+  const dismissToast = useCallback((id) => {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
+
+  // options.action = { label, run } adds a button (used for Undo).
+  const pushToast = useCallback((message, tone = 'info', options = {}) => {
     const id = `${Date.now()}-${Math.random()}`;
-    setToasts((current) => [...current, { id, message, tone }]);
+    const duration = options.action ? 7000 : 3800;
+    setToasts((current) => [...current.slice(-3), { id, message, tone, action: options.action || null, duration }]);
     const timer = window.setTimeout(() => {
       timers.current.delete(timer);
       setToasts((current) => current.filter((toast) => toast.id !== id));
-    }, 4200);
+    }, duration);
     timers.current.add(timer);
-  }, []);
-
-  const dismissToast = useCallback((id) => {
-    setToasts((current) => current.filter((toast) => toast.id !== id));
+    return id;
   }, []);
 
   const askConfirm = useCallback((options) => {

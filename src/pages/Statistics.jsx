@@ -1,107 +1,167 @@
 import { useMemo, useState } from 'react';
-import { StatisticsCard } from '../components/StatisticsCard.jsx';
-import { EmptyState } from '../components/EmptyState.jsx';
+import { AnimatedNumber, EmptyState, Segmented, StatCard, SubjectDot } from '../components/ui.jsx';
+import { BarChart, Donut, Heatmap, HourChart } from '../components/charts.jsx';
+import { Icon } from '../components/Icons.jsx';
 import { formatDuration, phaseLabel } from '../utils/formatTime.js';
 import { formatDate, startOfDay, endOfDay, inLocalRange } from '../utils/date.js';
+import { dailySeries, formatHour, heatmapWeeks, hourlyDistribution, peakHour } from '../utils/insights.js';
 
-export function Statistics({ stats, sessions, tasks, subjects }) {
+export function Statistics({ stats, sessions, tasks, subjects, settings, streak }) {
+  const [range, setRange] = useState(7);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [subjectId, setSubjectId] = useState('all');
-  const maxSeconds = Math.max(1, ...stats.daily.map((day) => day.seconds));
-  const maxSubject = Math.max(1, ...stats.subjects.map((item) => item.seconds));
 
-  const filtered = useMemo(() => {
-    return sessions.filter((session) => {
-      if (subjectId !== 'all' && (session.subjectId || 'unassigned') !== subjectId) return false;
-      if (from && to) {
-        return inLocalRange(session.endedAt, startOfDay(from), endOfDay(to));
-      }
-      return true;
-    });
-  }, [from, sessions, subjectId, to]);
+  const series = useMemo(() => dailySeries(sessions, range), [range, sessions]);
+  const weeks = useMemo(() => heatmapWeeks(sessions, 20), [sessions]);
+  const hours = useMemo(() => hourlyDistribution(sessions), [sessions]);
+  const peak = useMemo(() => peakHour(sessions), [sessions]);
+  const rangeTotal = series.reduce((sum, day) => sum + day.seconds, 0);
+  const activeDays = series.filter((day) => day.seconds > 0).length;
+  const segments = stats.subjects.filter((item) => item.seconds > 0).map((item) => ({ id: item.id, label: item.name, value: item.seconds, color: item.color }));
+  const totalFocus = segments.reduce((sum, segment) => sum + segment.value, 0);
+  const completionRate = stats.tasks.total ? Math.round((stats.tasks.completed / stats.tasks.total) * 100) : 0;
 
-  const filteredSeconds = filtered
-    .filter((session) => session.phase === 'focus')
-    .reduce((total, session) => total + (session.durationSeconds || 0), 0);
+  const filtered = useMemo(
+    () =>
+      sessions.filter((session) => {
+        if (subjectId !== 'all' && (session.subjectId || 'unassigned') !== subjectId) return false;
+        if (from && !inLocalRange(session.endedAt, startOfDay(`${from}T12:00:00`), new Date(8640000000000000))) return false;
+        if (to && !inLocalRange(session.endedAt, new Date(0), endOfDay(`${to}T12:00:00`))) return false;
+        return true;
+      }),
+    [from, sessions, subjectId, to]
+  );
+  const filteredSeconds = filtered.filter((session) => session.phase === 'focus').reduce((total, session) => total + (session.durationSeconds || 0), 0);
 
   return (
     <div className="page-stack">
-      <section className="grid-metrics">
-        <StatisticsCard label="Today" value={formatDuration(stats.studySecondsToday)} hint="Local midnight to now" />
-        <StatisticsCard label="This week" value={formatDuration(stats.studySecondsWeek)} hint="Monday to Sunday" />
-        <StatisticsCard label="This month" value={formatDuration(stats.studySecondsMonth)} hint="Calendar month" />
-        <StatisticsCard
-          label="Focus sessions"
-          value={stats.completedFocusAll}
-          hint={`Average ${formatDuration(stats.averageFocusSeconds)}`}
+      <section className="stat-grid">
+        <StatCard index={0} icon="clock" label="Today" value={formatDuration(stats.studySecondsToday)} hint={`Goal ${formatDuration(settings.dailyGoalMinutes * 60)}`} />
+        <StatCard index={1} icon="statistics" label="This week" value={formatDuration(stats.studySecondsWeek)} hint={`${stats.completedFocusWeek} sessions`} />
+        <StatCard
+          index={2}
+          icon="flame"
+          tone="warning"
+          label="Current streak"
+          value={
+            <>
+              <AnimatedNumber value={streak.current} /> <small>day{streak.current === 1 ? '' : 's'}</small>
+            </>
+          }
+          hint={`Best ${streak.best} · ${streak.activeDays} active days`}
+        />
+        <StatCard
+          index={3}
+          icon="check"
+          tone="success"
+          label="Tasks completed"
+          value={
+            <>
+              <AnimatedNumber value={completionRate} />
+              <small>%</small>
+            </>
+          }
+          hint={`${stats.tasks.completed} of ${stats.tasks.total}`}
         />
       </section>
 
-      <section className="grid-metrics">
-        <StatisticsCard label="Tasks completed" value={stats.tasks.completed} />
-        <StatisticsCard label="Tasks remaining" value={stats.tasks.remaining} />
-        <StatisticsCard label="Overdue" value={stats.tasks.overdue} />
-        <StatisticsCard label="Completed today" value={stats.tasks.completedToday} />
-      </section>
-
-      <section className="split">
-        <article className="panel">
-          <div className="panel-title">
-            <h2>Daily study time</h2>
-          </div>
-          <div className="week-chart" aria-label="Daily study time">
-            {stats.daily.map((day) => (
-              <div key={day.date} className="week-col">
-                <div className="week-bar-track">
-                  <div className="week-bar" style={{ height: day.seconds ? `${Math.max(6, (day.seconds / maxSeconds) * 100)}%` : '0%' }} />
-                </div>
-                <span>{day.label}</span>
-              </div>
-            ))}
-          </div>
+      <section className="insight-grid">
+        <article className="card panel span-2">
+          <header className="panel-head">
+            <div>
+              <h3>Focus time</h3>
+              <p className="muted small">
+                {formatDuration(rangeTotal)} over {activeDays} active day{activeDays === 1 ? '' : 's'}
+                {activeDays ? ` · ${formatDuration(rangeTotal / activeDays)} per active day` : ''}
+              </p>
+            </div>
+            <Segmented
+              label="Range"
+              size="sm"
+              value={range}
+              onChange={setRange}
+              options={[
+                { value: 7, label: '7 days' },
+                { value: 30, label: '30 days' },
+              ]}
+            />
+          </header>
+          <BarChart key={range} data={series} goalSeconds={settings.dailyGoalMinutes * 60} height={210} dense={range > 10} />
         </article>
-        <article className="panel">
-          <div className="panel-title">
-            <h2>Time by subject</h2>
-          </div>
-          {stats.subjects.every((item) => item.seconds === 0) ? (
-            <EmptyState title="No subject time yet" body="Complete a focus session to see the split." />
+
+        <article className="card panel">
+          <header className="panel-head">
+            <h3>By subject</h3>
+          </header>
+          {segments.length === 0 ? (
+            <EmptyState icon="subjects" title="No focus time yet" body="Run a focus block on a task to see the split." />
           ) : (
-            stats.subjects.map((item) => (
-              <div key={item.id} className="dist-row">
-                <span>{item.name}</span>
-                <div className="dist-track">
-                  <div
-                    className="dist-fill"
-                    style={{ width: `${(item.seconds / maxSubject) * 100}%`, background: item.color }}
-                  />
-                </div>
-                <span className="muted">{formatDuration(item.seconds)}</span>
-              </div>
-            ))
+            <div className="donut-wrap">
+              <Donut segments={segments} centerValue={formatDuration(totalFocus)} centerLabel="total" />
+              <ul className="legend">
+                {segments.slice(0, 6).map((segment) => (
+                  <li key={segment.id}>
+                    <SubjectDot color={segment.color} />
+                    <span>{segment.label}</span>
+                    <strong>{Math.round((segment.value / totalFocus) * 100)}%</strong>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </article>
+
+        <article className="card panel span-2">
+          <header className="panel-head">
+            <div>
+              <h3>Consistency</h3>
+              <p className="muted small">Last 20 weeks</p>
+            </div>
+          </header>
+          <Heatmap weeks={weeks} />
+        </article>
+
+        <article className="card panel">
+          <header className="panel-head">
+            <div>
+              <h3>Time of day</h3>
+              <p className="muted small">{peak === null ? 'When you focus best' : `You focus most around ${formatHour(peak)}`}</p>
+            </div>
+          </header>
+          <HourChart hours={hours} />
+          <div className="mini-stats">
+            <div>
+              <strong>{stats.completedFocusAll}</strong>
+              <span>sessions</span>
+            </div>
+            <div>
+              <strong>{formatDuration(stats.averageFocusSeconds)}</strong>
+              <span>average</span>
+            </div>
+            <div>
+              <strong>{formatDuration(stats.studySecondsMonth)}</strong>
+              <span>this month</span>
+            </div>
+          </div>
+        </article>
       </section>
 
-      <section className="panel">
-        <div className="panel-title">
-          <h2>Session history</h2>
-        </div>
-        <div className="toolbar">
-          <div className="field-inline">
-            <label htmlFor="from-date">From</label>
-            <input id="from-date" type="date" value={from} onChange={(event) => setFrom(event.target.value)} />
+      <section className="card panel">
+        <header className="panel-head">
+          <div>
+            <h3>Session history</h3>
+            <p className="muted small">
+              {filtered.length} session{filtered.length === 1 ? '' : 's'} · {formatDuration(filteredSeconds)} focused
+            </p>
           </div>
-          <div className="field-inline">
-            <label htmlFor="to-date">To</label>
-            <input id="to-date" type="date" value={to} onChange={(event) => setTo(event.target.value)} />
-          </div>
-          <div className="field-inline">
-            <label htmlFor="session-subject">Subject</label>
-            <select id="session-subject" value={subjectId} onChange={(event) => setSubjectId(event.target.value)}>
-              <option value="all">All</option>
-              <option value="unassigned">Unassigned</option>
+          <div className="toolbar-inline">
+            <input type="date" className="select-sm" value={from} max={to || undefined} onChange={(event) => setFrom(event.target.value)} aria-label="From date" />
+            <span className="muted small">to</span>
+            <input type="date" className="select-sm" value={to} min={from || undefined} onChange={(event) => setTo(event.target.value)} aria-label="To date" />
+            <select className="select-sm" value={subjectId} onChange={(event) => setSubjectId(event.target.value)} aria-label="Subject">
+              <option value="all">All subjects</option>
+              <option value="unassigned">No subject</option>
               {subjects.map((subject) => (
                 <option key={subject.id} value={subject.id}>
                   {subject.name}
@@ -109,29 +169,27 @@ export function Statistics({ stats, sessions, tasks, subjects }) {
               ))}
             </select>
           </div>
-        </div>
-        <p className="muted" style={{ marginTop: 16 }}>
-          Filtered focus time: {formatDuration(filteredSeconds)}
-        </p>
+        </header>
         {filtered.length === 0 ? (
-          <EmptyState title="No sessions in this range" body="Adjust the dates or subject filter." />
+          <EmptyState icon="clock" title="No sessions here" body={sessions.length ? 'Try a wider date range or a different subject.' : 'Your focus history will build up as you use the timer.'} />
         ) : (
-          <div className="session-list" style={{ marginTop: 16 }}>
-            {filtered.slice(0, 20).map((session) => (
-              <article key={session.id} className="task-card">
-                <div className="row">
-                  <strong>
-                    {phaseLabel(session.phase)} · {formatDuration(session.durationSeconds)}
-                  </strong>
-                  <span className="chip">{session.completed ? 'Completed' : 'Interrupted'}</span>
-                </div>
-                <p className="muted">
-                  {formatDate(session.endedAt)}
-                  {session.taskId ? ` · ${tasks.find((task) => task.id === session.taskId)?.title || 'Removed task'}` : ''}
-                </p>
-              </article>
+          <ul className="session-list is-table">
+            {filtered.slice(0, 25).map((session) => (
+              <li key={session.id} className={`session phase-${session.phase}`}>
+                <span className="session-icon">
+                  <Icon name={session.phase === 'focus' ? 'zap' : 'coffee'} size={13} />
+                </span>
+                <span className="session-copy">
+                  <span>{tasks.find((task) => task.id === session.taskId)?.title || (session.phase === 'focus' ? 'Free focus' : phaseLabel(session.phase))}</span>
+                  <span className="muted small">
+                    {phaseLabel(session.phase)} · {formatDate(session.endedAt)}
+                  </span>
+                </span>
+                {!session.completed ? <span className="pill">Stopped early</span> : null}
+                <strong className="session-duration">{formatDuration(session.durationSeconds)}</strong>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </section>
     </div>

@@ -1,258 +1,233 @@
 import { useEffect, useState } from 'react';
+import { Icon } from '../components/Icons.jsx';
+import { Kbd, Segmented, Switch } from '../components/ui.jsx';
 
-const SHORTCUTS = [
-  { keys: '⌘/Ctrl N', action: 'Create a new task' },
-  { keys: '⌘/Ctrl K', action: 'Open quick search' },
-  { keys: '⌘/Ctrl ,', action: 'Open Settings' },
-  { keys: 'Space', action: 'Pause or resume the timer when you are not typing' },
-  { keys: 'Esc', action: 'Close the active dialog' },
+export const ACCENTS = [
+  { id: 'violet', label: 'Violet', color: '#8b7cff' },
+  { id: 'blue', label: 'Blue', color: '#4f9dff' },
+  { id: 'emerald', label: 'Emerald', color: '#2fcf9a' },
+  { id: 'rose', label: 'Rose', color: '#ff6b9a' },
+  { id: 'amber', label: 'Amber', color: '#f5a524' },
 ];
 
-export function Settings({
-  settings,
-  version,
-  userDataPath,
-  onUpdate,
-  onResetPreferences,
-  onExportJson,
-  onExportCsv,
-  onImport,
-}) {
-  const [name, setName] = useState(settings.studentName || '');
-  const [busy, setBusy] = useState('');
+const START_PAGES = [
+  ['dashboard', 'Dashboard'],
+  ['tasks', 'Tasks'],
+  ['calendar', 'Calendar'],
+  ['focus', 'Focus'],
+  ['notes', 'Notes'],
+  ['statistics', 'Insights'],
+];
 
-  async function save(patch) {
-    setBusy('save');
-    try {
-      await onUpdate(patch);
-    } finally {
-      setBusy('');
+function Stepper({ label, hint, value, min, max, step = 1, suffix = 'min', onChange }) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+
+  function commit(raw) {
+    const number = Math.round(Number(raw));
+    if (!Number.isFinite(number)) {
+      setDraft(String(value));
+      return;
     }
+    const next = Math.min(max, Math.max(min, number));
+    setDraft(String(next));
+    if (next !== value) onChange(next);
   }
 
   return (
-    <div className="page-stack">
-      <section className="panel">
-        <div className="panel-title">
-          <h2>Appearance and start page</h2>
-        </div>
-        <div className="settings-grid">
-          <div className="field">
-            <label htmlFor="student-name">What should FocusDesk call you?</label>
-            <input
-              id="student-name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              onBlur={() => save({ studentName: name })}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="theme">Theme</label>
-            <select
-              id="theme"
-              value={settings.theme}
-              onChange={(event) => save({ theme: event.target.value })}
-            >
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="start-page">Start page</label>
-            <select
-              id="start-page"
-              value={settings.startPage}
-              onChange={(event) => save({ startPage: event.target.value })}
-            >
-              <option value="dashboard">Dashboard</option>
-              <option value="tasks">Tasks</option>
-              <option value="focus">Focus Timer</option>
-              <option value="statistics">Statistics</option>
-            </select>
-          </div>
-        </div>
-      </section>
+    <div className="setting-row">
+      <span className="switch-copy">
+        <span>{label}</span>
+        {hint ? <span className="muted small">{hint}</span> : null}
+      </span>
+      <div className="stepper">
+        <button type="button" onClick={() => commit(value - step)} disabled={value <= min} aria-label={`Decrease ${label}`}>
+          −
+        </button>
+        <input
+          inputMode="numeric"
+          value={draft}
+          aria-label={label}
+          onChange={(event) => setDraft(event.target.value.replace(/[^\d]/g, ''))}
+          onBlur={() => commit(draft)}
+          onKeyDown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
+        />
+        <span className="stepper-suffix">{suffix}</span>
+        <button type="button" onClick={() => commit(value + step)} disabled={value >= max} aria-label={`Increase ${label}`}>
+          +
+        </button>
+      </div>
+    </div>
+  );
+}
 
-      <section className="panel">
-        <div className="panel-title">
-          <h2>Timer lengths</h2>
+function Section({ icon, title, description, children, index }) {
+  return (
+    <section className="card settings-section" style={{ '--i': index }}>
+      <header>
+        <span className="settings-icon">
+          <Icon name={icon} size={17} />
+        </span>
+        <div>
+          <h3>{title}</h3>
+          {description ? <p className="muted small">{description}</p> : null}
         </div>
-        <div className="settings-grid">
-          <NumberField
-            id="focus-minutes"
-            label="Focus minutes"
-            value={settings.focusMinutes}
-            onChange={(value) => save({ focusMinutes: value })}
-          />
-          <NumberField
-            id="short-break"
-            label="Short break minutes"
-            value={settings.shortBreakMinutes}
-            onChange={(value) => save({ shortBreakMinutes: value })}
-          />
-          <NumberField
-            id="long-break"
-            label="Long break minutes"
-            value={settings.longBreakMinutes}
-            onChange={(value) => save({ longBreakMinutes: value })}
-          />
-          <NumberField
-            id="long-interval"
-            label="Focus sessions before a long break"
-            value={settings.longBreakInterval}
-            onChange={(value) => save({ longBreakInterval: value })}
-          />
-          <NumberField
-            id="daily-goal"
-            label="Daily study goal, minutes"
-            value={settings.dailyGoalMinutes}
-            onChange={(value) => save({ dailyGoalMinutes: value })}
-          />
-        </div>
-      </section>
+      </header>
+      <div className="settings-body">{children}</div>
+    </section>
+  );
+}
 
-      <section className="panel">
-        <div className="panel-title">
-          <h2>Desktop notifications</h2>
-        </div>
-        <Toggle
-          label="Enable notifications"
-          checked={settings.notificationsEnabled}
-          onChange={(value) => save({ notificationsEnabled: value })}
-        />
-        <Toggle
-          label="Focus session completed"
-          checked={settings.notifyFocusComplete}
-          onChange={(value) => save({ notifyFocusComplete: value })}
-        />
-        <Toggle
-          label="Break completed"
-          checked={settings.notifyBreakComplete}
-          onChange={(value) => save({ notifyBreakComplete: value })}
-        />
-        <Toggle
-          label="Upcoming and overdue deadlines"
-          checked={settings.notifyDeadlines}
-          onChange={(value) => save({ notifyDeadlines: value })}
-        />
-        <Toggle
-          label="Daily study goal reached"
-          checked={settings.notifyDailyGoal}
-          onChange={(value) => save({ notifyDailyGoal: value })}
-        />
-      </section>
+export function Settings({ settings, version, userDataPath, isMac, onUpdate, onResetPreferences, onExportJson, onExportCsv, onImport, onTestSound }) {
+  const [name, setName] = useState(settings.studentName || '');
+  const mod = isMac ? '⌘' : 'Ctrl';
+  const save = (patch) => onUpdate(patch).catch(() => {});
 
-      <section className="panel">
-        <div className="panel-title">
-          <h2>Keyboard shortcuts</h2>
+  const shortcuts = [
+    [`${mod} K`, 'Search and commands'],
+    [`${mod} N`, 'New task'],
+    [`${mod} 1 – 7`, 'Jump between pages'],
+    [`${mod} ,`, 'Settings'],
+    [`${mod} B`, 'Collapse the sidebar'],
+    ['Space', 'Start, pause, or resume the timer'],
+    ['Esc', 'Close a dialog or leave zen mode'],
+  ];
+
+  return (
+    <div className="settings-grid">
+      <Section index={0} icon="palette" title="Appearance" description="Theme, accent color, and motion.">
+        <div className="setting-row">
+          <span className="switch-copy">
+            <span>Your name</span>
+            <span className="muted small">Shown in the greeting.</span>
+          </span>
+          <input
+            className="input-sm"
+            value={name}
+            placeholder="Optional"
+            aria-label="Your name"
+            onChange={(event) => setName(event.target.value)}
+            onBlur={() => name !== settings.studentName && save({ studentName: name })}
+            onKeyDown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
+          />
         </div>
-        <table className="shortcut-table">
-          <thead>
-            <tr>
-              <th>Shortcut</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {SHORTCUTS.map((item) => (
-              <tr key={item.keys}>
-                <td>
-                  <kbd>{item.keys}</kbd>
-                </td>
-                <td>{item.action}</td>
-              </tr>
+        <div className="setting-row">
+          <span className="switch-copy">
+            <span>Theme</span>
+          </span>
+          <Segmented
+            label="Theme"
+            size="sm"
+            value={settings.theme}
+            onChange={(value) => save({ theme: value })}
+            options={[
+              { value: 'light', label: 'Light', icon: 'sun' },
+              { value: 'dark', label: 'Dark', icon: 'moon' },
+              { value: 'system', label: 'System' },
+            ]}
+          />
+        </div>
+        <div className="setting-row">
+          <span className="switch-copy">
+            <span>Accent color</span>
+          </span>
+          <div className="swatches" role="radiogroup" aria-label="Accent color">
+            {ACCENTS.map((accent) => (
+              <button
+                key={accent.id}
+                type="button"
+                role="radio"
+                aria-checked={settings.accent === accent.id}
+                aria-label={accent.label}
+                data-tip={accent.label}
+                className={`swatch ${settings.accent === accent.id ? 'is-selected' : ''}`}
+                style={{ '--c': accent.color }}
+                onClick={() => save({ accent: accent.id })}
+              />
             ))}
-          </tbody>
-        </table>
-      </section>
+          </div>
+        </div>
+        <div className="setting-row">
+          <span className="switch-copy">
+            <span>Open on</span>
+          </span>
+          <select className="select-sm" value={settings.startPage} aria-label="Start page" onChange={(event) => save({ startPage: event.target.value })}>
+            {START_PAGES.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <Switch label="Reduce motion" hint="Turns off animations and confetti." checked={settings.reduceMotion} onChange={(value) => save({ reduceMotion: value })} />
+      </Section>
 
-      <section className="panel">
-        <div className="panel-title">
-          <h2>Data and backup</h2>
-        </div>
-        <p className="muted">
-          Local data is stored in the application user-data folder, not in the project directory.
+      <Section index={1} icon="focus" title="Timer" description="Block lengths and what happens when one ends.">
+        <Stepper label="Focus" value={settings.focusMinutes} min={1} max={180} step={5} onChange={(value) => save({ focusMinutes: value })} />
+        <Stepper label="Short break" value={settings.shortBreakMinutes} min={1} max={60} onChange={(value) => save({ shortBreakMinutes: value })} />
+        <Stepper label="Long break" value={settings.longBreakMinutes} min={1} max={90} step={5} onChange={(value) => save({ longBreakMinutes: value })} />
+        <Stepper label="Long break after" value={settings.longBreakInterval} min={2} max={12} suffix="sessions" onChange={(value) => save({ longBreakInterval: value })} />
+        <Stepper label="Daily goal" hint="Drives the goal ring and your streak reminders." value={settings.dailyGoalMinutes} min={15} max={720} step={15} onChange={(value) => save({ dailyGoalMinutes: value })} />
+        <Switch label="Start breaks automatically" checked={settings.autoStartBreaks} onChange={(value) => save({ autoStartBreaks: value })} />
+        <Switch label="Start the next focus block automatically" checked={settings.autoStartFocus} onChange={(value) => save({ autoStartFocus: value })} />
+      </Section>
+
+      <Section index={2} icon="bell" title="Sound and notifications" description="Chimes inside the app, banners outside it.">
+        <Switch
+          label="Sound effects"
+          hint="A chime when a block ends and a tick when you finish a task."
+          checked={settings.soundEnabled}
+          onChange={(value) => {
+            save({ soundEnabled: value });
+            if (value) onTestSound();
+          }}
+        />
+        <Switch label="Desktop notifications" checked={settings.notificationsEnabled} onChange={(value) => save({ notificationsEnabled: value })} />
+        <Switch label="Focus block finished" disabled={!settings.notificationsEnabled} checked={settings.notifyFocusComplete} onChange={(value) => save({ notifyFocusComplete: value })} />
+        <Switch label="Break finished" disabled={!settings.notificationsEnabled} checked={settings.notifyBreakComplete} onChange={(value) => save({ notifyBreakComplete: value })} />
+        <Switch label="Deadlines due and overdue" disabled={!settings.notificationsEnabled} checked={settings.notifyDeadlines} onChange={(value) => save({ notifyDeadlines: value })} />
+        <Switch label="Daily goal reached" disabled={!settings.notificationsEnabled} checked={settings.notifyDailyGoal} onChange={(value) => save({ notifyDailyGoal: value })} />
+      </Section>
+
+      <Section index={3} icon="keyboard" title="Keyboard shortcuts" description="Everything is reachable without the mouse.">
+        <ul className="shortcut-list">
+          {shortcuts.map(([keys, action]) => (
+            <li key={keys}>
+              <span>{action}</span>
+              <Kbd>{keys}</Kbd>
+            </li>
+          ))}
+        </ul>
+      </Section>
+
+      <Section index={4} icon="database" title="Your data" description="Stored only on this computer. No account, no cloud.">
+        <p className="path-box" title={userDataPath}>
+          {userDataPath}
         </p>
-        <p className="path-box">{userDataPath}</p>
-        <p className="muted stack-gap">
-          Export writes a copy you choose. Restore replaces current tasks, subjects, sessions, and settings after FocusDesk writes a pre-restore backup next to that folder. If the selected file is invalid, current data is left unchanged.
-        </p>
-        <div className="header-actions stack-gap wrap">
-          <button type="button" className="btn btn-primary" onClick={onExportJson} disabled={Boolean(busy)}>
-            Export JSON backup
+        <div className="button-row">
+          <button type="button" className="btn btn-glass" onClick={onExportJson}>
+            <Icon name="download" size={15} />
+            Export backup
           </button>
-          <button type="button" className="btn btn-ghost" onClick={() => onExportCsv('tasks')}>
-            Export tasks CSV
+          <button type="button" className="btn btn-glass" onClick={() => onExportCsv('tasks')}>
+            Tasks CSV
           </button>
-          <button type="button" className="btn btn-ghost" onClick={() => onExportCsv('sessions')}>
-            Export sessions CSV
+          <button type="button" className="btn btn-glass" onClick={() => onExportCsv('sessions')}>
+            Sessions CSV
           </button>
         </div>
-        <div className="header-actions stack-gap wrap">
+        <div className="button-row">
           <button type="button" className="btn btn-ghost" onClick={onImport}>
+            <Icon name="upload" size={15} />
             Restore from backup
           </button>
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-title">
-          <h2>Preferences reset</h2>
-        </div>
-        <p className="muted">
-          This restores theme, timer lengths, and notification defaults. Tasks, subjects, and session history stay in place.
-        </p>
-        <div className="header-actions stack-gap">
           <button type="button" className="btn btn-ghost" onClick={onResetPreferences}>
+            <Icon name="reset" size={15} />
             Reset preferences
           </button>
         </div>
-        <p className="muted stack-gap">
-          FocusDesk {version}. All data stays on this computer.
-        </p>
-      </section>
-    </div>
-  );
-}
-
-function NumberField({ id, label, value, onChange }) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => {
-    setDraft(value);
-  }, [value]);
-  return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      <input
-        id={id}
-        type="number"
-        min="1"
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={() => {
-          const next = Number(draft);
-          if (!Number.isFinite(next) || next < 1) {
-            setDraft(value);
-            return;
-          }
-          onChange(next);
-        }}
-      />
-    </div>
-  );
-}
-
-function Toggle({ label, checked, onChange }) {
-  const id = label.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  return (
-    <div className="toggle-row">
-      <label htmlFor={id}>{label}</label>
-      <input
-        id={id}
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-      />
+        <p className="muted small">Restoring replaces everything, after FocusDesk saves a copy of your current data. FocusDesk {version}.</p>
+      </Section>
     </div>
   );
 }

@@ -1,25 +1,50 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Sidebar } from './components/Sidebar.jsx';
-import { Header } from './components/Header.jsx';
-import { Modal } from './components/Modal.jsx';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Sidebar, NAV_LINKS } from './components/Sidebar.jsx';
+import { TopBar } from './components/TopBar.jsx';
+import { Modal, ConfirmDialog } from './components/Modal.jsx';
 import { TaskForm } from './components/TaskForm.jsx';
-import { ConfirmDialog } from './components/ConfirmDialog.jsx';
 import { ToastStack } from './components/Toast.jsx';
 import { CommandPalette } from './components/CommandPalette.jsx';
+import { Icon } from './components/Icons.jsx';
+import { fireConfetti } from './components/confetti.js';
 import { Dashboard } from './pages/Dashboard.jsx';
 import { Tasks } from './pages/Tasks.jsx';
+import { Calendar } from './pages/Calendar.jsx';
 import { Subjects } from './pages/Subjects.jsx';
 import { Focus } from './pages/Focus.jsx';
+import { Notes } from './pages/Notes.jsx';
 import { Statistics } from './pages/Statistics.jsx';
 import { Settings } from './pages/Settings.jsx';
-import { useTasks } from './hooks/useTasks.js';
+import { useTasks, DEFAULT_FILTERS } from './hooks/useTasks.js';
 import { useSubjects } from './hooks/useSubjects.js';
+import { useNotes } from './hooks/useNotes.js';
 import { useSettings } from './hooks/useSettings.js';
 import { usePomodoro } from './hooks/usePomodoro.js';
 import { useFeedback } from './hooks/useFeedback.js';
+import { useSound } from './hooks/useSound.js';
 import { desktopApi } from './services/desktopApi.js';
-import { formatLongDate } from './utils/date.js';
+import { formatLongDate, greetingFor, isBeforeDay, isSameDay } from './utils/date.js';
 import { computeStatistics } from './utils/statistics.js';
+import { computeStreaks, focusByTask as computeFocusByTask } from './utils/insights.js';
+
+const PAGE_IDS = NAV_LINKS.map((link) => link.id);
+
+function Splash({ title, message }) {
+  return (
+    <div className="splash">
+      <div className="aurora" aria-hidden="true" />
+      <div className={`splash-mark ${title ? '' : 'is-loading'}`}>
+        <Icon name="logo" size={34} strokeWidth={1.8} />
+      </div>
+      {title ? (
+        <>
+          <h1>{title}</h1>
+          <p>{message}</p>
+        </>
+      ) : null}
+    </div>
+  );
+}
 
 export default function App() {
   const [boot, setBoot] = useState({ status: 'loading' });
@@ -29,8 +54,8 @@ export default function App() {
     async function load() {
       if (!desktopApi.available()) {
         setBoot({
-          status: 'missing',
-          message: 'FocusDesk needs the Electron shell. Run npm run dev from the project folder.',
+          status: 'error',
+          message: 'FocusDesk runs as a desktop app. Start it with “npm start” (or “npm run dev”) from the project folder.',
         });
         return;
       }
@@ -47,413 +72,547 @@ export default function App() {
     };
   }, []);
 
-  if (boot.status === 'loading') {
-    return (
-      <div className="page-scroll">
-        <div className="panel boot-error">Loading FocusDesk…</div>
-      </div>
-    );
-  }
-
-  if (boot.status === 'missing' || boot.status === 'error') {
-    return (
-      <div className="page-scroll">
-        <div className="panel boot-error">
-          <h1>FocusDesk could not start</h1>
-          <p className="muted" style={{ marginTop: 12 }}>
-            {boot.message}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
+  if (boot.status === 'loading') return <Splash />;
+  if (boot.status === 'error') return <Splash title="FocusDesk could not start" message={boot.message} />;
   return <ReadyApp initial={boot.data} />;
 }
 
+function useResolvedTheme(theme) {
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
+  useEffect(() => {
+    const query = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (event) => setSystemDark(event.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+  if (theme === 'system') return systemDark ? 'dark' : 'light';
+  return theme === 'light' ? 'light' : 'dark';
+}
+
+function isTypingTarget(node) {
+  if (!node) return false;
+  const tag = node.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || node.isContentEditable;
+}
+
 function ReadyApp({ initial }) {
-  const [page, setPage] = useState(initial.settings.startPage || 'dashboard');
-  const [editingTask, setEditingTask] = useState(null);
-  const [creatingTask, setCreatingTask] = useState(false);
+  const [page, setPage] = useState(PAGE_IDS.includes(initial.settings.startPage) ? initial.settings.startPage : 'dashboard');
+  const [taskModal, setTaskModal] = useState(null); // { task } to edit, { defaults } to create
   const [commandOpen, setCommandOpen] = useState(false);
+  const [zen, setZen] = useState(false);
   const [sessions, setSessions] = useState(initial.sessions);
+  const [selectedNoteId, setSelectedNoteId] = useState(null);
   const [loadErrors, setLoadErrors] = useState(initial.errors || []);
-  const [meta] = useState({ version: initial.version, userDataPath: initial.userDataPath });
+  const isMac = initial.platform === 'darwin';
 
   const feedback = useFeedback();
+  const { pushToast } = feedback;
   const taskState = useTasks(initial.tasks);
   const subjectState = useSubjects(initial.subjects);
+  const noteState = useNotes(initial.notes || []);
   const settingState = useSettings(initial.settings);
+  const { settings } = settingState;
+  const resolvedTheme = useResolvedTheme(settings.theme);
+  const sound = useSound({ enabled: settings.soundEnabled, ambient: settings.ambientSound, volume: settings.ambientVolume });
+  const soundRef = useRef(sound);
+  soundRef.current = sound;
 
   const timer = usePomodoro({
-    settings: settingState.settings,
+    settings,
     initialState: initial.settings.timerState,
-    onSession: (session) => setSessions((current) => [session, ...current]),
-    onNotify: (payload) => {
-      desktopApi.notifications.session(payload).catch(() => {});
+    onSession: (session) => setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]),
+    onComplete: ({ finishedPhase, autoStarted }) => {
+      const focusDone = finishedPhase === 'focus';
+      soundRef.current.play(focusDone ? 'complete' : 'break');
+      if (focusDone) fireConfetti({ y: 0.4 });
+      pushToast(
+        focusDone
+          ? `Focus block done.${autoStarted ? ' Break started.' : ' Time for a break.'}`
+          : `Break over.${autoStarted ? ' Back to it.' : ' Ready when you are.'}`,
+        'success'
+      );
+      desktopApi.notifications
+        .session({
+          kind: focusDone ? 'focus' : 'break',
+          title: focusDone ? 'Focus session complete' : 'Break complete',
+          body: focusDone ? 'Nice work. Your session was saved.' : 'Start the next focus block when you are ready.',
+        })
+        .catch(() => {});
     },
-    onError: (error) => feedback.pushToast(error.message, 'error'),
+    onError: (error) => pushToast(error.message, 'error'),
   });
 
+  // Theme, accent, and motion are plain attributes on <html>; the CSS does the rest.
   useEffect(() => {
-    document.documentElement.dataset.theme = settingState.settings.theme || 'dark';
-  }, [settingState.settings.theme]);
+    const root = document.documentElement;
+    root.dataset.theme = resolvedTheme;
+    root.dataset.accent = settings.accent;
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    root.dataset.motion = settings.reduceMotion || prefersReduced ? 'reduced' : 'full';
+  }, [resolvedTheme, settings.accent, settings.reduceMotion]);
+
+  const focusRunning = timer.state.status === 'running' && timer.state.phase === 'focus';
+  const { setAmbientActive } = sound;
+  useEffect(() => {
+    setAmbientActive(focusRunning);
+  }, [focusRunning, setAmbientActive]);
+
+  // Cards marked .spot get a soft highlight that follows the pointer.
+  useEffect(() => {
+    function onMove(event) {
+      const card = event.target.closest?.('.spot');
+      if (!card) return;
+      const rect = card.getBoundingClientRect();
+      card.style.setProperty('--mx', `${event.clientX - rect.left}px`);
+      card.style.setProperty('--my', `${event.clientY - rect.top}px`);
+    }
+    document.addEventListener('pointermove', onMove, { passive: true });
+    return () => document.removeEventListener('pointermove', onMove);
+  }, []);
+
+  const navigate = useCallback((next) => {
+    if (!PAGE_IDS.includes(next)) return;
+    setZen(false);
+    setPage(next);
+  }, []);
+
+  const updateSettings = useCallback(
+    async (patch) => {
+      try {
+        return await settingState.updateSettings(patch);
+      } catch (error) {
+        pushToast(error.message, 'error');
+        throw error;
+      }
+    },
+    [pushToast, settingState]
+  );
+
+  const toggleSidebar = useCallback(() => {
+    updateSettings({ sidebarCollapsed: !settings.sidebarCollapsed }).catch(() => {});
+  }, [settings.sidebarCollapsed, updateSettings]);
+
+  const toggleTheme = useCallback(() => {
+    updateSettings({ theme: resolvedTheme === 'dark' ? 'light' : 'dark' }).catch(() => {});
+  }, [resolvedTheme, updateSettings]);
 
   useEffect(() => {
-    const stopNav = desktopApi.onNavigate((nextPage) => setPage(nextPage));
+    const stopNav = desktopApi.onNavigate((nextPage) => navigate(nextPage));
     const stopCommand = desktopApi.onCommand((command) => {
-      if (command === 'new-task') setCreatingTask(true);
+      if (command === 'new-task') setTaskModal((current) => current || { defaults: {} });
       if (command === 'quick-search') setCommandOpen(true);
     });
     return () => {
       stopNav?.();
       stopCommand?.();
     };
-  }, []);
+  }, [navigate]);
 
-  const isEditingField = useCallback(() => {
-    const tag = document.activeElement?.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || document.activeElement?.isContentEditable;
-  }, []);
-
+  const overlayOpen = Boolean(taskModal) || commandOpen || Boolean(feedback.confirm);
+  const toggleTimer = timer.toggle;
   const timerStatus = timer.state.status;
-  const pauseTimer = timer.pause;
-  const resumeTimer = timer.resume;
 
   useEffect(() => {
     function onKeyDown(event) {
-      const metaKey = event.metaKey || event.ctrlKey;
-      if (metaKey && event.key.toLowerCase() === 'k') {
+      const mod = event.metaKey || event.ctrlKey;
+      const key = event.key.toLowerCase();
+      if (mod && key === 'k') {
         event.preventDefault();
         setCommandOpen(true);
+        return;
       }
-      if (metaKey && event.key.toLowerCase() === 'n') {
-        if (isEditingField()) return;
+      if (overlayOpen) return;
+      if (mod && key === 'n') {
         event.preventDefault();
-        setCreatingTask(true);
-      }
-      if (metaKey && event.key === ',') {
+        setTaskModal({ defaults: {} });
+      } else if (mod && key === ',') {
         event.preventDefault();
-        setPage('settings');
-      }
-      if (event.key === 'Escape') {
-        setCreatingTask(false);
-        setEditingTask(null);
-        setCommandOpen(false);
-      }
-      if (event.code === 'Space' && !isEditingField() && !creatingTask && !editingTask && !commandOpen) {
+        navigate('settings');
+      } else if (mod && key === 'b') {
+        event.preventDefault();
+        toggleSidebar();
+      } else if (mod && /^[1-7]$/.test(key)) {
+        event.preventDefault();
+        navigate(PAGE_IDS[Number(key) - 1]);
+      } else if (event.code === 'Space' && !mod) {
+        // Space belongs to whatever control has focus; only take it when nothing does.
+        const active = document.activeElement;
+        if (isTypingTarget(active) || active?.tagName === 'BUTTON' || active?.tagName === 'A') return;
         if (page !== 'focus' && timerStatus === 'idle') return;
         event.preventDefault();
-        if (timerStatus === 'running') pauseTimer();
-        else if (timerStatus === 'paused') resumeTimer();
+        toggleTimer();
       }
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [commandOpen, creatingTask, editingTask, isEditingField, page, pauseTimer, resumeTimer, timerStatus]);
+  }, [navigate, overlayOpen, page, timerStatus, toggleSidebar, toggleTimer]);
 
-  const stats = useMemo(
-    () =>
-      computeStatistics({
-        tasks: taskState.tasks,
-        sessions,
-        subjects: subjectState.subjects,
-      }),
-    [sessions, subjectState.subjects, taskState.tasks]
-  );
+  const { tasks } = taskState;
+  const { subjects } = subjectState;
+  const stats = useMemo(() => computeStatistics({ tasks, sessions, subjects }), [sessions, subjects, tasks]);
+  const streak = useMemo(() => computeStreaks(sessions), [sessions]);
+  const focusByTask = useMemo(() => computeFocusByTask(sessions), [sessions]);
 
-  async function handleCreate(payload) {
-    const task = await taskState.createTask(payload);
-    setCreatingTask(false);
-    feedback.pushToast('Task created');
-    return task;
-  }
+  const badges = useMemo(() => {
+    const now = new Date();
+    const open = tasks.filter((task) => task.status !== 'completed');
+    const overdue = open.filter((task) => task.dueDate && isBeforeDay(task.dueDate, now)).length;
+    const dueToday = open.filter((task) => task.dueDate && isSameDay(task.dueDate, now)).length;
+    const count = overdue + dueToday;
+    return count ? { tasks: { count, tone: overdue ? 'is-danger' : '' } } : {};
+  }, [tasks]);
 
-  async function handleUpdate(payload) {
-    const task = await taskState.updateTask(editingTask.id, payload);
-    setEditingTask(null);
-    feedback.pushToast('Task updated');
-    return task;
-  }
+  // ---- task actions -------------------------------------------------------
 
-  async function handleComplete(task) {
+  async function run(work, successMessage) {
     try {
-      await taskState.updateTask(task.id, { status: 'completed' });
-      feedback.pushToast('Task completed');
+      const result = await work();
+      if (successMessage) pushToast(successMessage, 'success');
+      return result;
     } catch (error) {
-      feedback.pushToast(error.message, 'error');
+      pushToast(error.message, 'error');
+      return null;
     }
   }
 
-  async function handleReopen(task) {
-    try {
-      await taskState.updateTask(task.id, { status: 'todo' });
-      feedback.pushToast('Task reopened');
-    } catch (error) {
-      feedback.pushToast(error.message, 'error');
+  async function toggleTask(task) {
+    const completing = task.status !== 'completed';
+    const previous = task.status;
+    const updated = await run(() => taskState.updateTask(task.id, { status: completing ? 'completed' : 'todo' }));
+    if (!updated) return;
+    if (completing) {
+      sound.play('check');
+      fireConfetti({ count: 36, y: 0.5 });
+      pushToast(`Completed “${task.title}”`, 'success', {
+        action: { label: 'Undo', run: () => run(() => taskState.updateTask(task.id, { status: previous })) },
+      });
+      if (timer.state.taskId === task.id) timer.setTask(null);
     }
   }
 
-  async function handleDeleteTask(task) {
-    const confirmed = await feedback.askConfirm({
-      title: 'Delete this task?',
-      body: 'The task will be removed. Completed history in statistics stays if sessions already exist.',
-      confirmLabel: 'Delete task',
-      danger: true,
+  async function deleteTask(task) {
+    const removed = await run(() => taskState.removeTask(task.id));
+    if (removed === null) return;
+    setTaskModal(null);
+    if (timer.state.taskId === task.id) timer.setTask(null);
+    const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, completedAt: _completedAt, ...fields } = task;
+    pushToast(`Deleted “${task.title}”`, 'info', {
+      action: { label: 'Undo', run: () => run(() => taskState.createTask(fields)) },
     });
-    if (!confirmed) return;
-    try {
-      await taskState.removeTask(task.id);
-      setEditingTask(null);
-      feedback.pushToast('Task deleted');
-    } catch (error) {
-      feedback.pushToast(error.message, 'error');
+  }
+
+  async function focusTask(task) {
+    navigate('focus');
+    if (timer.state.status === 'idle') {
+      await timer.start({ phase: 'focus', taskId: task.id, subjectId: task.subjectId || null });
+      sound.play('start');
+    } else {
+      await timer.setTask(task);
     }
   }
 
-  async function handleDeleteSubject(subject) {
-    const related = taskState.tasks.filter((task) => task.subjectId === subject.id).length;
+  const actions = {
+    navigate,
+    openTask: (task) => setTaskModal({ task }),
+    newTask: (defaults = {}) => setTaskModal({ defaults }),
+    createTask: async (fields) => {
+      // Throws on failure so forms can show the validation message inline.
+      const task = await taskState.createTask(fields);
+      pushToast('Task added', 'success');
+      return task;
+    },
+    toggleTask,
+    deleteTask,
+    focusTask,
+    startFocus: async () => {
+      navigate('focus');
+      if (timer.state.status === 'idle') {
+        await timer.start({ phase: 'focus' });
+        sound.play('start');
+      }
+    },
+    moveTask: (task, status) => run(() => taskState.updateTask(task.id, { status })),
+    toggleSubtask: (task, subtaskId) =>
+      run(() =>
+        taskState.updateTask(task.id, {
+          subtasks: (task.subtasks || []).map((item) => (item.id === subtaskId ? { ...item, done: !item.done } : item)),
+        })
+      ),
+  };
+
+  // ---- notes, subjects, data ----------------------------------------------
+
+  async function createNote(fields = {}) {
+    const note = await run(() => noteState.createNote({ title: '', body: '', ...fields }));
+    if (!note) return;
+    setSelectedNoteId(note.id);
+    navigate('notes');
+  }
+
+  async function deleteNote(note) {
+    const removed = await run(() => noteState.removeNote(note.id));
+    if (removed === null) return;
+    setSelectedNoteId(null);
+    pushToast(`Deleted “${note.title || 'Untitled note'}”`, 'info', {
+      action: {
+        label: 'Undo',
+        run: async () => {
+          const restored = await run(() =>
+            noteState.createNote({ title: note.title, body: note.body, subjectId: note.subjectId, pinned: note.pinned })
+          );
+          if (restored) setSelectedNoteId(restored.id);
+        },
+      },
+    });
+  }
+
+  async function deleteSubject(subject) {
+    const related = tasks.filter((task) => task.subjectId === subject.id).length;
     const confirmed = await feedback.askConfirm({
       title: `Delete ${subject.name}?`,
-      body:
-        related > 0
-          ? `${related} related tasks will stay, but they will become unassigned.`
-          : 'This subject will be removed. Existing tasks are unchanged.',
+      body: related > 0 ? `${related} task${related === 1 ? '' : 's'} will stay, without a subject.` : 'No tasks use this subject.',
       confirmLabel: 'Delete subject',
       danger: true,
     });
     if (!confirmed) return;
-    try {
-      await subjectState.removeSubject(subject.id);
-      taskState.setTasks((current) =>
-        current.map((task) => (task.subjectId === subject.id ? { ...task, subjectId: null } : task))
-      );
-      feedback.pushToast('Subject deleted');
-    } catch (error) {
-      feedback.pushToast(error.message, 'error');
-    }
+    const removed = await run(() => subjectState.removeSubject(subject.id), 'Subject deleted');
+    if (removed === null) return;
+    const unlink = (item) => (item.subjectId === subject.id ? { ...item, subjectId: null } : item);
+    taskState.setTasks((current) => current.map(unlink));
+    noteState.setNotes((current) => current.map(unlink));
   }
 
-  async function startFocusFor(task) {
-    setPage('focus');
-    if (timer.state.status === 'idle') {
-      await timer.start({ taskId: task.id, subjectId: task.subjectId || null });
-    } else {
-      await timer.setTask(task);
-    }
-    feedback.pushToast(`Focus set to ${task.title}`);
+  function applySnapshot(snapshot) {
+    taskState.setTasks(snapshot.tasks);
+    subjectState.setSubjects(snapshot.subjects);
+    noteState.setNotes(snapshot.notes || []);
+    setSessions(snapshot.sessions);
+    settingState.setSettings(snapshot.settings);
   }
 
   async function handleExport(kind) {
-    try {
-      const result = kind === 'json' ? await desktopApi.data.exportJson() : await desktopApi.data.exportCsv(kind);
-      if (!result.canceled) feedback.pushToast('Export saved');
-    } catch (error) {
-      feedback.pushToast(error.message, 'error');
-    }
+    const result = await run(() => (kind === 'json' ? desktopApi.data.exportJson() : desktopApi.data.exportCsv(kind)));
+    if (result && !result.canceled) pushToast('Export saved', 'success');
   }
 
   async function handleImport() {
     const confirmed = await feedback.askConfirm({
-      title: 'Replace current data?',
-      body: 'FocusDesk will write a backup first, then restore the selected file. This replaces tasks, subjects, sessions, and settings.',
+      title: 'Replace all current data?',
+      body: 'FocusDesk saves a copy of what you have now, then restores the file you choose. Tasks, subjects, notes, sessions, and settings are all replaced.',
       confirmLabel: 'Choose backup file',
       danger: true,
     });
     if (!confirmed) return;
-    try {
-      const result = await desktopApi.data.importJson();
-      if (result.canceled) return;
-      taskState.setTasks(result.snapshot.tasks);
-      subjectState.setSubjects(result.snapshot.subjects);
-      setSessions(result.snapshot.sessions);
-      settingState.setSettings(result.snapshot.settings);
-      feedback.pushToast('Backup restored. Restart FocusDesk if a timer was running in the backup.');
-    } catch (error) {
-      feedback.pushToast(error.message, 'error');
-    }
+    const result = await run(() => desktopApi.data.importJson());
+    if (!result || result.canceled) return;
+    applySnapshot(result.snapshot);
+    pushToast('Backup restored', 'success');
   }
 
+  async function resetPreferences() {
+    const confirmed = await feedback.askConfirm({
+      title: 'Reset preferences?',
+      body: 'Theme, timer lengths, sounds, and notifications go back to their defaults. Your tasks, notes, and history are not touched.',
+      confirmLabel: 'Reset',
+    });
+    if (confirmed) await run(() => settingState.resetPreferences(), 'Preferences reset');
+  }
+
+  const paletteActions = [
+    { id: 'new-task', label: 'New task', icon: 'plus', shortcut: `${isMac ? '⌘' : 'Ctrl'} N`, keywords: 'create add', run: () => setTaskModal({ defaults: {} }) },
+    { id: 'new-note', label: 'New note', icon: 'notes', keywords: 'create write', run: () => createNote() },
+    {
+      id: 'timer',
+      label: timerStatus === 'running' ? 'Pause timer' : timerStatus === 'paused' ? 'Resume timer' : 'Start a focus block',
+      icon: timerStatus === 'running' ? 'pause' : 'play',
+      shortcut: 'Space',
+      keywords: 'pomodoro focus start stop',
+      run: () => (timerStatus === 'idle' ? actions.startFocus() : timer.toggle()),
+    },
+    { id: 'zen', label: 'Enter zen mode', icon: 'expand', keywords: 'fullscreen distraction', run: () => { navigate('focus'); setZen(true); } },
+    { id: 'theme', label: `Switch to ${resolvedTheme === 'dark' ? 'light' : 'dark'} theme`, icon: resolvedTheme === 'dark' ? 'sun' : 'moon', keywords: 'appearance mode', run: toggleTheme },
+    { id: 'sidebar', label: settings.sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar', icon: 'sidebar', shortcut: `${isMac ? '⌘' : 'Ctrl'} B`, run: toggleSidebar },
+    { id: 'export', label: 'Export a backup', icon: 'download', keywords: 'save json data', run: () => handleExport('json') },
+  ];
+
+  const greeting = `${greetingFor(new Date())}${settings.studentName ? `, ${settings.studentName}` : ''}`;
+  const goalTarget = settings.dailyGoalMinutes * 60;
+  const editingTask = taskModal?.task ? tasks.find((task) => task.id === taskModal.task.id) || taskModal.task : null;
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${settings.sidebarCollapsed ? 'sidebar-collapsed' : ''} ${zen ? 'is-zen' : ''}`}>
+      <div className="aurora" aria-hidden="true" />
       <Sidebar
         page={page}
-        onNavigate={setPage}
-        studySeconds={stats.studySecondsToday}
-        openTasks={stats.tasks.remaining}
-        version={meta.version}
+        onNavigate={navigate}
+        collapsed={settings.sidebarCollapsed}
+        onToggle={toggleSidebar}
+        badges={badges}
+        timer={timer}
+        streak={streak.current}
+        goal={{ seconds: stats.studySecondsToday, targetSeconds: goalTarget, progress: Math.min(1, stats.studySecondsToday / goalTarget) }}
       />
       <div className="main-area">
-        <Header
+        <TopBar
           page={page}
+          greeting={greeting}
           dateLabel={formatLongDate(new Date())}
-          onNewTask={() => setCreatingTask(true)}
+          isMac={isMac}
+          isDark={resolvedTheme === 'dark'}
           onSearch={() => setCommandOpen(true)}
+          onNewTask={() => setTaskModal({ defaults: {} })}
+          onToggleTheme={toggleTheme}
         />
         <main className="page-scroll">
-          {loadErrors.length > 0 ? (
-            <section className="panel" style={{ marginBottom: 16 }}>
-              <h2>Some data files could not be loaded</h2>
-              <p className="muted">
-                Damaged files were left in place. You can recover an empty file without overwriting the backup copy.
-              </p>
-              <div className="header-actions" style={{ marginTop: 12 }}>
+          <div className={`page page-${page}`} key={page}>
+            {loadErrors.length > 0 ? (
+              <section className="card banner">
+                <Icon name="alert" size={18} />
+                <div>
+                  <strong>Some saved data could not be read</strong>
+                  <p className="muted small">The damaged files were left untouched and backed up. You can start those sections fresh.</p>
+                </div>
+                <span className="spacer" />
                 {loadErrors.map((error) => (
                   <button
                     key={error.name}
                     type="button"
-                    className="btn btn-ghost"
+                    className="btn btn-glass btn-sm"
                     onClick={async () => {
-                      try {
-                        const snapshot = await desktopApi.recover(error.name);
-                        taskState.setTasks(snapshot.tasks);
-                        subjectState.setSubjects(snapshot.subjects);
-                        setSessions(snapshot.sessions);
-                        settingState.setSettings(snapshot.settings);
-                        setLoadErrors(snapshot.errors);
-                        feedback.pushToast(`Recovered ${error.name}`);
-                      } catch (recoverError) {
-                        feedback.pushToast(recoverError.message, 'error');
-                      }
+                      const snapshot = await run(() => desktopApi.recover(error.name), `Reset ${error.name}`);
+                      if (!snapshot) return;
+                      applySnapshot(snapshot);
+                      setLoadErrors(snapshot.errors);
                     }}
                   >
-                    Recover {error.name}
+                    Reset {error.name}
                   </button>
                 ))}
-              </div>
-            </section>
-          ) : null}
+              </section>
+            ) : null}
 
-          {page === 'dashboard' ? (
-            <Dashboard
-              settings={settingState.settings}
-              tasks={taskState.tasks}
-              subjects={subjectState.subjects}
-              stats={stats}
-              timer={timer}
-              onOpenTask={(task) => {
-                setPage('tasks');
-                setEditingTask(task);
-              }}
-              onComplete={handleComplete}
-              onReopen={handleReopen}
-              onFocus={startFocusFor}
-              onNavigate={setPage}
-              onCreateTask={handleCreate}
-            />
-          ) : null}
-          {page === 'tasks' ? (
-            <Tasks
-              tasks={taskState.visible}
-              subjects={subjectState.subjects}
-              filters={taskState.filters}
-              onFilterChange={taskState.setFilters}
-              onOpen={setEditingTask}
-              onComplete={handleComplete}
-              onReopen={handleReopen}
-              onFocus={startFocusFor}
-              onNew={() => setCreatingTask(true)}
-            />
-          ) : null}
-          {page === 'subjects' ? (
-            <Subjects
-              subjects={subjectState.subjects}
-              tasks={taskState.tasks}
-              sessions={sessions}
-              onCreate={async (payload) => {
-                await subjectState.createSubject(payload);
-                feedback.pushToast('Subject added');
-              }}
-              onUpdate={async (id, payload) => {
-                await subjectState.updateSubject(id, payload);
-                feedback.pushToast('Subject updated');
-              }}
-              onDelete={handleDeleteSubject}
-            />
-          ) : null}
-          {page === 'focus' ? (
-            <Focus
-              tasks={taskState.tasks}
-              subjects={subjectState.subjects}
-              sessions={sessions}
-              timer={timer}
-              onSelectTask={(task) => timer.setTask(task)}
-            />
-          ) : null}
-          {page === 'statistics' ? (
-            <Statistics
-              stats={stats}
-              sessions={sessions}
-              tasks={taskState.tasks}
-              subjects={subjectState.subjects}
-            />
-          ) : null}
-          {page === 'settings' ? (
-            <Settings
-              settings={settingState.settings}
-              version={meta.version}
-              userDataPath={meta.userDataPath}
-              onUpdate={async (patch) => {
-                try {
-                  await settingState.updateSettings(patch);
-                } catch (error) {
-                  feedback.pushToast(error.message, 'error');
-                  throw error;
-                }
-              }}
-              onResetPreferences={async () => {
-                const confirmed = await feedback.askConfirm({
-                  title: 'Reset preferences?',
-                  body: 'Theme, timer lengths, and notification defaults will reset. Tasks and history are not deleted.',
-                  confirmLabel: 'Reset preferences',
-                });
-                if (!confirmed) return;
-                try {
-                  await settingState.resetPreferences();
-                  feedback.pushToast('Preferences reset');
-                } catch (error) {
-                  feedback.pushToast(error.message, 'error');
-                }
-              }}
-              onExportJson={() => handleExport('json')}
-              onExportCsv={handleExport}
-              onImport={handleImport}
-            />
-          ) : null}
+            {page === 'dashboard' ? (
+              <Dashboard tasks={tasks} subjects={subjects} sessions={sessions} settings={settings} stats={stats} streak={streak} focusByTask={focusByTask} timer={timer} actions={actions} />
+            ) : null}
+            {page === 'tasks' ? (
+              <Tasks
+                tasks={tasks}
+                subjects={subjects}
+                filters={taskState.filters}
+                onFilterChange={taskState.setFilters}
+                view={settings.taskView}
+                onViewChange={(view) => updateSettings({ taskView: view }).catch(() => {})}
+                focusByTask={focusByTask}
+                actions={actions}
+              />
+            ) : null}
+            {page === 'calendar' ? <Calendar tasks={tasks} subjects={subjects} sessions={sessions} focusByTask={focusByTask} actions={actions} /> : null}
+            {page === 'focus' ? (
+              <Focus
+                tasks={tasks}
+                subjects={subjects}
+                sessions={sessions}
+                settings={settings}
+                timer={timer}
+                zen={zen}
+                onZenChange={setZen}
+                onUpdateSettings={(patch) => updateSettings(patch).catch(() => {})}
+                actions={actions}
+              />
+            ) : null}
+            {page === 'notes' ? (
+              <Notes
+                notes={noteState.notes}
+                subjects={subjects}
+                selectedId={selectedNoteId}
+                onSelect={setSelectedNoteId}
+                onCreate={createNote}
+                onSave={noteState.updateNote}
+                onDelete={deleteNote}
+              />
+            ) : null}
+            {page === 'subjects' ? (
+              <Subjects
+                subjects={subjects}
+                tasks={tasks}
+                sessions={sessions}
+                onCreate={async (payload) => {
+                  await subjectState.createSubject(payload);
+                  pushToast('Subject added', 'success');
+                }}
+                onUpdate={async (id, payload) => {
+                  await subjectState.updateSubject(id, payload);
+                  pushToast('Subject updated', 'success');
+                }}
+                onDelete={deleteSubject}
+                onShowTasks={(subject) => {
+                  taskState.setFilters({ ...DEFAULT_FILTERS, subjectId: subject.id });
+                  navigate('tasks');
+                }}
+              />
+            ) : null}
+            {page === 'statistics' ? <Statistics stats={stats} sessions={sessions} tasks={tasks} subjects={subjects} settings={settings} streak={streak} /> : null}
+            {page === 'settings' ? (
+              <Settings
+                settings={settings}
+                version={initial.version}
+                userDataPath={initial.userDataPath}
+                isMac={isMac}
+                onUpdate={updateSettings}
+                onResetPreferences={resetPreferences}
+                onExportJson={() => handleExport('json')}
+                onExportCsv={handleExport}
+                onImport={handleImport}
+                onTestSound={() => window.setTimeout(() => soundRef.current.play('check'), 60)}
+              />
+            ) : null}
+          </div>
         </main>
       </div>
 
-      {creatingTask ? (
-        <Modal title="New task" onClose={() => setCreatingTask(false)}>
-          <TaskForm
-            subjects={subjectState.subjects}
-            submitLabel="Create task"
-            onSubmit={handleCreate}
-            onCancel={() => setCreatingTask(false)}
-          />
-        </Modal>
-      ) : null}
-
-      {editingTask ? (
-        <Modal title="Edit task" onClose={() => setEditingTask(null)}>
+      {taskModal ? (
+        <Modal
+          key={editingTask?.id || 'new'}
+          title={editingTask ? 'Edit task' : 'New task'}
+          onClose={() => setTaskModal(null)}
+          size="lg"
+        >
           <TaskForm
             task={editingTask}
-            subjects={subjectState.subjects}
-            submitLabel="Save changes"
-            onSubmit={handleUpdate}
-            onCancel={() => setEditingTask(null)}
-            onDelete={() => handleDeleteTask(editingTask)}
+            defaults={taskModal.defaults}
+            subjects={subjects}
+            submitLabel={editingTask ? 'Save changes' : 'Create task'}
+            onCancel={() => setTaskModal(null)}
+            onDelete={editingTask ? () => deleteTask(editingTask) : undefined}
+            onSubmit={async (payload) => {
+              if (editingTask) {
+                const wasOpen = editingTask.status !== 'completed';
+                await taskState.updateTask(editingTask.id, payload);
+                if (wasOpen && payload.status === 'completed') sound.play('check');
+                pushToast('Task updated', 'success');
+              } else {
+                await taskState.createTask(payload);
+                pushToast('Task added', 'success');
+              }
+              setTaskModal(null);
+            }}
           />
         </Modal>
       ) : null}
 
       {commandOpen ? (
         <CommandPalette
-          tasks={taskState.tasks}
+          tasks={tasks}
+          notes={noteState.notes}
+          actions={paletteActions}
+          isMac={isMac}
           onClose={() => setCommandOpen(false)}
-          onNavigate={setPage}
-          onOpenTask={setEditingTask}
-          onNewTask={() => setCreatingTask(true)}
+          onNavigate={navigate}
+          onOpenTask={(task) => setTaskModal({ task })}
+          onOpenNote={(note) => {
+            setSelectedNoteId(note.id);
+            navigate('notes');
+          }}
         />
       ) : null}
 

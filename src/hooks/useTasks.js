@@ -1,19 +1,17 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { desktopApi } from '../services/desktopApi.js';
-import { queryTasks } from '../utils/taskFilters.js';
+
+export const DEFAULT_FILTERS = {
+  tab: 'open',
+  query: '',
+  priority: 'all',
+  subjectId: 'all',
+  sortBy: 'dueDate',
+};
 
 export function useTasks(initial = []) {
   const [tasks, setTasks] = useState(initial);
-  const [filters, setFilters] = useState({
-    query: '',
-    status: 'all',
-    priority: 'all',
-    subjectId: 'all',
-    due: 'all',
-    sortBy: 'dueDate',
-  });
-
-  const visible = useMemo(() => queryTasks(tasks, filters), [tasks, filters]);
+  const [filters, setFilters] = useState(DEFAULT_FILTERS);
 
   const createTask = useCallback(async (payload) => {
     const task = await desktopApi.tasks.create(payload);
@@ -32,5 +30,5 @@ export function useTasks(initial = []) {
     setTasks((current) => current.filter((item) => item.id !== id));
   }, []);
 
-  return { tasks, setTasks, visible, filters, setFilters, createTask, updateTask, removeTask };
+  return { tasks, setTasks, filters, setFilters, createTask, updateTask, removeTask };
 }

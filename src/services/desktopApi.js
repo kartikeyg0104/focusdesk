@@ -43,6 +43,12 @@ export const desktopApi = {
     list: () => api().sessions.list().then(unwrap),
     create: (data) => api().sessions.create(data).then(unwrap),
   },
+  notes: {
+    list: () => api().notes.list().then(unwrap),
+    create: (data) => api().notes.create(data).then(unwrap),
+    update: (id, data) => api().notes.update(id, data).then(unwrap),
+    remove: (id) => api().notes.remove(id).then(unwrap),
+  },
   settings: {
     get: () => api().settings.get().then(unwrap),
     update: (data) => api().settings.update(data).then(unwrap),
