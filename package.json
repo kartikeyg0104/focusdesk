@@ -1,18 +1,18 @@
 {
   "name": "focusdesk",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "description": "A local-first student productivity desktop app built with Electron and React.",
   "author": "FocusDesk",
   "main": "electron/main.js",
   "scripts": {
-    "dev": "concurrently -k -n VITE,ELECTRON \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && env -u ELECTRON_RUN_AS_NODE electron .\"",
-    "start": "env -u ELECTRON_RUN_AS_NODE electron .",
+    "dev": "concurrently -k -n VITE,ELECTRON \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && node scripts/run-electron.js --dev\"",
+    "start": "vite build && node scripts/run-electron.js",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint electron lib src tests",
+    "lint": "eslint electron lib src tests scripts",
     "package": "vite build && electron-builder --dir"
   },
   "dependencies": {

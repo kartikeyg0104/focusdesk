@@ -73,18 +73,19 @@ function createApplicationMenu(getWindow) {
     {
       label: 'View',
       submenu: [
-        {
-          label: 'Dashboard',
-          click: () => send('app:navigate', 'dashboard'),
-        },
-        {
-          label: 'Tasks',
-          click: () => send('app:navigate', 'tasks'),
-        },
-        {
-          label: 'Focus Timer',
-          click: () => send('app:navigate', 'focus'),
-        },
+        ...[
+          ['Dashboard', 'dashboard'],
+          ['Tasks', 'tasks'],
+          ['Calendar', 'calendar'],
+          ['Focus Timer', 'focus'],
+          ['Notes', 'notes'],
+          ['Subjects', 'subjects'],
+          ['Statistics', 'statistics'],
+        ].map(([label, page], index) => ({
+          label,
+          accelerator: `CmdOrCtrl+${index + 1}`,
+          click: () => send('app:navigate', page),
+        })),
         { type: 'separator' },
         { role: 'reload' },
         { role: 'toggleDevTools' },

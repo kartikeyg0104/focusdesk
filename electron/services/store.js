@@ -8,6 +8,8 @@ const {
   validateSubjectCreate,
   validateSubjectUpdate,
   validateSessionCreate,
+  validateNoteCreate,
+  validateNoteUpdate,
   applyTaskStatus,
   namesMatch,
 } = require('../../lib/validation');
@@ -26,6 +28,7 @@ class FocusDeskStore {
       tasks: null,
       subjects: null,
       sessions: null,
+      notes: null,
       settings: null,
     };
     this.ready = false;
@@ -37,6 +40,7 @@ class FocusDeskStore {
     this.cache.subjects = await this.loadCollection('subjects', { seedDefaults: true });
     this.cache.tasks = await this.loadCollection('tasks');
     this.cache.sessions = await this.loadCollection('sessions');
+    this.cache.notes = await this.loadCollection('notes');
     this.cache.settings = await this.loadSettings();
     this.ready = this.loadErrors.length === 0;
     return this.snapshot();
@@ -49,6 +53,7 @@ class FocusDeskStore {
       tasks: this.cache.tasks ? this.cache.tasks.items : [],
       subjects: this.cache.subjects ? this.cache.subjects.items : [],
       sessions: this.cache.sessions ? this.cache.sessions.items : [],
+      notes: this.cache.notes ? this.cache.notes.items : [],
       settings: this.cache.settings ? this.cache.settings.data : normalizeSettings({}),
     };
   }
@@ -251,12 +256,19 @@ class FocusDeskStore {
     this.cache.tasks.items = previousTasks.map((task) =>
       task.subjectId === id ? { ...task, subjectId: null, updatedAt: toIso(this.now()) } : task
     );
+    const previousNotes = this.cache.notes ? this.cache.notes.items : null;
+    const notesReady = previousNotes && !this.loadErrors.some((error) => error.name === 'notes');
+    if (notesReady) {
+      this.cache.notes.items = previousNotes.map((note) => (note.subjectId === id ? { ...note, subjectId: null } : note));
+    }
     try {
       await this.persistCollection('subjects');
       await this.persistCollection('tasks');
+      if (notesReady) await this.persistCollection('notes');
     } catch (error) {
       this.cache.subjects.items = previousSubjects;
       this.cache.tasks.items = previousTasks;
+      if (notesReady) this.cache.notes.items = previousNotes;
       throw error;
     }
     return {
@@ -299,6 +311,50 @@ class FocusDeskStore {
 
     await this.commitCollection('sessions', [session, ...this.cache.sessions.items].slice(0, SESSION_LIMIT));
     return session;
+  }
+
+  listNotes() {
+    this.requireReady('notes');
+    return this.cache.notes.items;
+  }
+
+  noteSubject(subjectId) {
+    if (!subjectId) return null;
+    return this.cache.subjects.items.some((subject) => subject.id === subjectId) ? subjectId : null;
+  }
+
+  async createNote(payload) {
+    this.requireReady('notes');
+    const fields = validateNoteCreate(payload);
+    fields.subjectId = this.noteSubject(fields.subjectId);
+    const nowIso = toIso(this.now());
+    const note = { id: createId(), ...fields, createdAt: nowIso, updatedAt: nowIso };
+    await this.commitCollection('notes', [note, ...this.cache.notes.items]);
+    return note;
+  }
+
+  async updateNote(id, payload) {
+    this.requireReady('notes');
+    const index = this.cache.notes.items.findIndex((note) => note.id === id);
+    if (index === -1) throw new AppError('NOT_FOUND', 'That note no longer exists.');
+    const fields = validateNoteUpdate(payload);
+    if (fields.subjectId !== undefined) fields.subjectId = this.noteSubject(fields.subjectId);
+    const next = { ...this.cache.notes.items[index], ...fields, updatedAt: toIso(this.now()) };
+    const items = this.cache.notes.items.slice();
+    items[index] = next;
+    await this.commitCollection('notes', items);
+    return next;
+  }
+
+  async removeNote(id) {
+    this.requireReady('notes');
+    const exists = this.cache.notes.items.some((note) => note.id === id);
+    if (!exists) throw new AppError('NOT_FOUND', 'That note no longer exists.');
+    await this.commitCollection(
+      'notes',
+      this.cache.notes.items.filter((note) => note.id !== id)
+    );
+    return { id };
   }
 
   getSettings() {
@@ -363,6 +419,7 @@ class FocusDeskStore {
       tasks: this.cache.tasks?.items || [],
       subjects: this.cache.subjects?.items || [],
       sessions: this.cache.sessions?.items || [],
+      notes: this.cache.notes?.items || [],
       settings: this.cache.settings?.data || normalizeSettings({}),
       exportedAt: toIso(this.now()),
     });
@@ -383,28 +440,33 @@ class FocusDeskStore {
       tasks: this.cache.tasks,
       subjects: this.cache.subjects,
       sessions: this.cache.sessions,
+      notes: this.cache.notes,
       settings: this.cache.settings,
     };
 
     this.cache.tasks = { version: 1, items: imported.tasks };
     this.cache.subjects = { version: 1, items: imported.subjects };
     this.cache.sessions = { version: 1, items: imported.sessions };
+    this.cache.notes = { version: 1, items: imported.notes };
     this.cache.settings = settingsDocument(imported.settings);
 
     try {
       await this.storage.save('tasks', this.cache.tasks);
       await this.storage.save('subjects', this.cache.subjects);
       await this.storage.save('sessions', this.cache.sessions);
+      await this.storage.save('notes', this.cache.notes);
       await this.storage.save('settings', this.cache.settings);
     } catch (error) {
       this.cache.tasks = previous.tasks;
       this.cache.subjects = previous.subjects;
       this.cache.sessions = previous.sessions;
+      this.cache.notes = previous.notes;
       this.cache.settings = previous.settings;
       try {
         await this.storage.save('tasks', previous.tasks);
         await this.storage.save('subjects', previous.subjects);
         await this.storage.save('sessions', previous.sessions);
+        if (previous.notes) await this.storage.save('notes', previous.notes);
         await this.storage.save('settings', previous.settings);
       } catch (_rollbackError) {
         // Keep the original error; rollback to disk is best-effort.
@@ -418,7 +480,7 @@ class FocusDeskStore {
   }
 
   async recoverCollection(name) {
-    const allowed = ['tasks', 'subjects', 'sessions', 'settings'];
+    const allowed = ['tasks', 'subjects', 'sessions', 'notes', 'settings'];
     if (!allowed.includes(name)) {
       throw new AppError('VALIDATION', 'Unknown data file.');
     }

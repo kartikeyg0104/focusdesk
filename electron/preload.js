@@ -36,6 +36,12 @@ contextBridge.exposeInMainWorld('focusDesk', {
     list: () => invoke('sessions:list'),
     create: (data) => invoke('sessions:create', data),
   },
+  notes: {
+    list: () => invoke('notes:list'),
+    create: (data) => invoke('notes:create', data),
+    update: (id, data) => invoke('notes:update', id, data),
+    remove: (id) => invoke('notes:remove', id),
+  },
   settings: {
     get: () => invoke('settings:get'),
     update: (data) => invoke('settings:update', data),

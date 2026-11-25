@@ -27,12 +27,23 @@ function createIpcHandlers(store, extras = {}) {
     'subjects:remove': async (id) => store.removeSubject(id),
     'sessions:list': async () => store.listSessions(),
     'sessions:create': async (payload) => store.createSession(payload),
+    'notes:list': async () => store.listNotes(),
+    'notes:create': async (payload) => store.createNote(payload),
+    'notes:update': async (id, payload) => store.updateNote(id, payload),
+    'notes:remove': async (id) => store.removeNote(id),
     'settings:get': async () => store.getSettings(),
     'settings:update': async (payload) => store.updateSettings(payload),
     'settings:resetPreferences': async () =>
       store.updateSettings(
         {
           theme: 'dark',
+          accent: 'violet',
+          autoStartBreaks: false,
+          autoStartFocus: false,
+          soundEnabled: true,
+          ambientSound: 'off',
+          ambientVolume: 40,
+          reduceMotion: false,
           focusMinutes: 25,
           shortBreakMinutes: 5,
           longBreakMinutes: 15,
